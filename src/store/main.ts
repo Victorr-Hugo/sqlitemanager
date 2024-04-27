@@ -1,239 +1,259 @@
-import * as fs from 'fs';
-import * as sqlite3 from 'sqlite3';
+import * as fs from "fs";
+import * as sqlite3 from "sqlite3";
+import * as path from "path";
 
-export class getStore {
-  private readonly dbFile: string;
-  public db: sqlite3.Database;
-  private options: QueryOptions;
+export function getStore(): sqlite3.Database {
+  const dbFile = "__d.sqlite";
+  const dbExists = fs.existsSync(dbFile);
 
-  constructor(tableName: string) {
-    this.dbFile = '__d.sqlite';
-    const dbExists = fs.existsSync(this.dbFile);
+  if (!dbExists) {
+    fs.closeSync(fs.openSync(dbFile, "w"));
+  }
+  scheduleDailyBackup(dbFile);
 
-    if (!dbExists) {
-      fs.closeSync(fs.openSync(this.dbFile, 'w'));
+  return new sqlite3.Database(dbFile);
+}
+
+function scheduleDailyBackup(dbFile: string): void {
+  const backupDir = "__backups";
+  if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir);
+  }
+
+  setInterval(() => {
+    const timestamp = new Date().toISOString().replace(/:/g, "-");
+    const backupFile = `${backupDir}/backup_${timestamp}.sqlite`;
+
+    fs.copyFileSync(dbFile, backupFile);
+    console.log(`Backup realizado en: ${backupFile}`);
+
+    deleteOldBackups(backupDir);
+  }, 24 * 60 * 60 * 1000);
+}
+
+function deleteOldBackups(backupDir: string): void {
+  const maxAge = 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  fs.readdir(backupDir, (err, files) => {
+    if (err) {
+      console.error("Error al leer el directorio de backups:", err);
+      return;
     }
 
-    this.db = new sqlite3.Database(this.dbFile);
-    this.options = { tableName };
-  }
-
-  public where(field: string, value: any): this {
-    this.options.where = { field, value };
-    return this;
-  }
-
-  public collection(db: sqlite3.Database, tableName: string): Collection {
-    return { db, tableName };
-  }
-
-  public async getDocs(query: Query | Collection): Promise<any[]> {
-    return new Promise((resolve, reject) => {
-      if ('db' in query && 'tableName' in query) {
-        const { db, tableName } = query;
-        let sql = `SELECT * FROM ${tableName}`;
-        db.all(sql, (err: any, rows: any[]) => {
-          if (err) {
-            reject({
-              status: 500,
-              message: 'Error al obtener los registros:',
-              error: err
-            });
-          } else {
-            resolve(rows);
-          }
-        });
-      } else if (
-        'collection' in query &&
-        'field' in query &&
-        'operator' in query &&
-        'value' in query
-      ) {
-        const { collection, field, operator, value } = query;
-        let sql = `SELECT * FROM ${collection.tableName}`;
-        switch (operator) {
-          case '==':
-            sql += ` WHERE ${field} = ?`;
-            break;
-          case '!=':
-            sql += ` WHERE ${field} != ?`;
-            break;
-          default:
-            reject('Operador no válido.');
+    files.forEach((file) => {
+      const filePath = path.join(backupDir, file);
+      fs.stat(filePath, (err, stats) => {
+        if (err) {
+          console.error("Error al obtener información del archivo:", err);
+          return;
         }
-        collection.db.all(sql, [value], (err: any, rows: any[]) => {
-          if (err) {
-            reject({
-              status: 500,
-              message: 'Error al obtener los registros:',
-              error: err
-            });
-          } else {
-            resolve(rows);
-          }
-        });
+
+        const fileAge = now - stats.mtime.getTime();
+        if (fileAge > maxAge) {
+          fs.unlink(filePath, (err) => {
+            if (err) {
+              console.error("Error al eliminar el archivo de backup:", err);
+              return;
+            }
+            console.log(`Backup más antiguo eliminado: ${filePath}`);
+          });
+        }
+      });
+    });
+  });
+}
+
+export function collection(db: sqlite3.Database, table: string) {
+  return { db, table };
+}
+
+export function where(
+  column: string,
+  operand: string,
+  value: any
+): QueryOptions {
+  return { column, operand, value };
+}
+
+export function getDocs(
+  collection: Collection,
+  queryOptions?: QueryOptions
+): Promise<any[]> {
+  const { db, table } = collection;
+
+  return new Promise((resolve, reject) => {
+    let sql = `SELECT * FROM ${table}`;
+    let params: any[] = [];
+
+    if (queryOptions) {
+      sql += ` WHERE ${queryOptions.column} ${queryOptions.operand} ?`;
+      params.push(queryOptions.value);
+    }
+
+    db.all(sql, params, (err: any, rows: any[] | PromiseLike<any[]>) => {
+      if (err) {
+        reject(err);
       } else {
-        reject('Entrada no válida.');
+        resolve(rows);
       }
     });
-  }
+  });
+}
 
-  public addDoc(tableName: string, record: Record<string, any>): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const keys = Object.keys(record);
-      const values = Object.values(record);
-      const placeholders = Array(keys.length).fill('?').join(',');
+export function addDoc(
+  db: sqlite3.Database,
+  tableName: string,
+  record: Record<string, any>
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const keys = Object.keys(record);
+    const values = Object.values(record);
+    const placeholders = Array(keys.length).fill("?").join(",");
 
-      const sql = `INSERT INTO ${tableName} (${keys.join(',')}) VALUES (${placeholders})`;
+    const sql = `INSERT INTO ${tableName} (${keys.join(
+      ","
+    )}) VALUES (${placeholders})`;
 
-      this.db.run(sql, values, (err: any) => {
-        if (err) {
-          reject(
-            JSON.stringify({
-              status: 501,
-              message: 'Error al insertar el registro:',
-              err
-            })
-          );
-        } else {
-          resolve(
-            JSON.stringify({
-              status: 200,
-              message: 'Registro insertado correctamente.'
-            })
-          );
-        }
-      });
+    db.run(sql, values, (err: any) => {
+      if (err) {
+        reject(
+          JSON.stringify({
+            status: 501,
+            message: "Error al insertar el registro:",
+            err,
+          })
+        );
+      } else {
+        resolve(
+          JSON.stringify({
+            status: 200,
+            message: "Registro insertado correctamente.",
+          })
+        );
+      }
     });
-  }
+  });
+}
 
-  public updateDoc(
-    tableName: string,
-    id: number,
-    updatedFields: Record<string, any>
-  ): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const keys = Object.keys(updatedFields);
-      const values = Object.values(updatedFields);
-      const placeholders = keys.map((key) => `${key} = ?`).join(',');
+export function updateDoc(
+  db: sqlite3.Database,
+  docRef: any,
+  newData: any
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tableName = docRef.tableName;
+    const idColumn = docRef.idColumn;
+    const idValue = docRef.idValue;
+    const updateData = Object.keys(newData)
+      .map((key) => `${key} = ?`)
+      .join(", ");
+    const sql = `UPDATE ${tableName} SET ${updateData} WHERE ${idColumn} = ?`;
 
-      const sql = `UPDATE ${tableName} SET ${placeholders} WHERE id = ?`;
-      values.push(id);
+    const values = [...Object.values(newData), idValue];
 
-      this.db.run(sql, values, (err: any) => {
-        if (err) {
-          reject(
-            JSON.stringify({
-              status: 500,
-              message: 'Error al actualizar el registro:',
-              err
-            })
-          );
+    db.run(sql, values, function (err: any) {
+      if (err) {
+        reject({
+          status: 500,
+          message: "Error al actualizar el documento:",
+          error: err,
+        });
+      } else {
+        if (this.changes > 0) {
+          resolve();
         } else {
-          resolve(
-            JSON.stringify({
-              status: 200,
-              message: 'Registro actualizado correctamente.'
-            })
-          );
+          reject(new Error("No se encontró el documento para actualizar."));
         }
-      });
+      }
     });
-  }
+  });
+}
 
-  public removeDoc(tableName: string, id: number): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const sql = `DELETE FROM ${tableName} WHERE id = ?`;
+export async function deleteDoc(
+  db: sqlite3.Database,
+  tableName: string,
+  queryOptions: QueryOptions
+): Promise<void> {
+  try {
+    const docRef = await doc(db, tableName, queryOptions);
 
-      this.db.run(sql, [id], (err: any) => {
-        if (err) {
-          reject(
-            JSON.stringify({
-              status: 500,
-              message: 'Error al eliminar el registro:',
-              err
-            })
-          );
-        } else {
-          resolve(
-            JSON.stringify({
-              status: 200,
-              message: 'Registro eliminado correctamente.'
-            })
-          );
-        }
-      });
-    });
-  }
-  public async doc(db: sqlite3.Database, tableName: string, value: any): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const sql = `SELECT * FROM ${tableName} WHERE ${Object.keys(value)[0]} = ? LIMIT 1`;
+    if (!docRef) {
+      throw new Error("No se encontró el documento para eliminar.");
+    }
 
-      db.get(sql, [Object.values(value)[0]], (err: any, row: any) => {
+    const idColumn = Object.keys(queryOptions)[0];
+    const idValue = Object.values(queryOptions)[0];
+    const sql = `DELETE FROM ${tableName} WHERE ${idColumn} = ?`;
+
+    await new Promise<void>((resolve, reject) => {
+      db.run(sql, [idValue], function (err: any) {
         if (err) {
           reject({
             status: 500,
-            message: 'Error al obtener el registro:',
-            error: err
+            message: "Error al eliminar el documento:",
+            error: err,
           });
         } else {
-          resolve(row);
+          if (this.changes > 0) {
+            resolve();
+          } else {
+            reject(new Error("No se encontró el documento para eliminar."));
+          }
         }
       });
     });
+  } catch (error) {
+    throw error;
   }
+}
+export function doc(
+  db: sqlite3.Database,
+  tableName: string,
+  value: any
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT * FROM ${tableName} WHERE ${
+      Object.keys(value)[0]
+    } = ? LIMIT 1`;
 
-  public async getDoc(query: Query | Collection): Promise<any> {
-    return new Promise((resolve, reject) => {
-      if ('db' in query && 'tableName' in query) {
-        // Si es un Collection
-        const { db, tableName } = query;
-        let sql = `SELECT * FROM ${tableName} LIMIT 1`;
-        db.get(sql, (err: any, row: any) => {
-          if (err) {
-            reject({
-              status: 500,
-              message: 'Error al obtener el registro:',
-              error: err
-            });
-          } else {
-            resolve(row);
-          }
-        });
-      } else if (
-        'collection' in query &&
-        'field' in query &&
-        'operator' in query &&
-        'value' in query
-      ) {
-        // Si es un Query
-        const { collection, field, operator, value } = query;
-        let sql = `SELECT * FROM ${collection.tableName}`;
-        switch (operator) {
-          case '==':
-            sql += ` WHERE ${field} = ?`;
-            break;
-          case '!=':
-            sql += ` WHERE ${field} != ?`;
-            break;
-          // Agrega otros operadores según sea necesario
-          default:
-            reject('Operador no válido.');
-        }
-        collection.db.get(sql, [value], (err: any, row: any) => {
-          if (err) {
-            reject({
-              status: 500,
-              message: 'Error al obtener el registro:',
-              error: err
-            });
-          } else {
-            resolve(row);
-          }
+    db.get(sql, [Object.values(value)[0]], (err: any, row: any) => {
+      if (err) {
+        reject({
+          status: 500,
+          message: "Error al obtener el registro:",
+          error: err,
         });
       } else {
-        reject('Entrada no válida.');
+        resolve(row);
       }
     });
-  }
+  });
+}
+
+export function getDoc(
+  collection: Collection,
+  queryOptions?: QueryOptions
+): Promise<any> {
+  const { db, table } = collection;
+
+  return new Promise((resolve, reject) => {
+    let sql = `SELECT * FROM ${table}`;
+    let params: any[] = [];
+
+    if (queryOptions) {
+      sql += ` WHERE ${queryOptions.column} ${queryOptions.operand} ?`;
+      params.push(queryOptions.value);
+    }
+
+    sql += " LIMIT 1";
+
+    db.get(sql, params, (err: any, row: any) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(row);
+      }
+    });
+  });
 }

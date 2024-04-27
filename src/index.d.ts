@@ -1,6 +1,7 @@
 interface QueryOptions {
-  tableName: string;
-  where?: { field: string; value: any };
+  column: string;
+  operand: string;
+  value: any;
 }
 
 interface Query {
@@ -12,5 +13,5 @@ interface Query {
 
 interface Collection {
   db: any;
-  tableName: string;
+  table: string;
 }
