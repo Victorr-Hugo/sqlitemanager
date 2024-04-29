@@ -2,7 +2,19 @@ import * as fs from "fs";
 import * as sqlite3 from "sqlite3";
 import * as path from "path";
 
+export interface QueryOptions {
+  column: string;
+  operand: string;
+  value: any;
+}
+
+export interface Collection {
+  db: any;
+  table: string;
+}
+
 export function getStore(): sqlite3.Database {
+  //@TODO implementar multiples bases de datos con nombres en conf de proj
   const dbFile = "__d.sqlite";
   const dbExists = fs.existsSync(dbFile);
 
@@ -10,7 +22,7 @@ export function getStore(): sqlite3.Database {
     fs.closeSync(fs.openSync(dbFile, "w"));
   }
   scheduleDailyBackup(dbFile);
-
+  sqlite3.verbose();
   return new sqlite3.Database(dbFile);
 }
 
@@ -105,31 +117,81 @@ export function addDoc(
   db: sqlite3.Database,
   tableName: string,
   record: Record<string, any>
-): Promise<string> {
+): Promise<any> {
+  const timestamp = new Date().toISOString();
+  const recordWithTimestamp = { ...record, timestamp };
+
   return new Promise((resolve, reject) => {
-    const keys = Object.keys(record);
-    const values = Object.values(record);
+    const keys = Object.keys(recordWithTimestamp);
+    const values = Object.values(recordWithTimestamp);
     const placeholders = Array(keys.length).fill("?").join(",");
-
-    const sql = `INSERT INTO ${tableName} (${keys.join(
-      ","
-    )}) VALUES (${placeholders})`;
-
-    db.run(sql, values, (err: any) => {
-      if (err) {
-        reject(
-          JSON.stringify({
-            status: 501,
-            message: "Error al insertar el registro:",
+    db.get(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+      [tableName],
+      (err: any, row: any) => {
+        if (err) {
+          reject({
+            message: "Error al verificar la existencia de la tabla:",
             err,
-          })
-        );
+          });
+        } else if (!row) {
+          const createTableSql = `CREATE TABLE ${tableName} (${keys
+            .map((key) => `${key} TEXT`)
+            .join(", ")})`;
+          db.run(createTableSql, (err: any) => {
+            if (err) {
+              reject({
+                message: "Error al crear la tabla:",
+                err,
+              });
+            } else {
+              insertRecord(db, tableName, keys, values, placeholders)
+                .then((insertedRecord) => resolve(insertedRecord))
+                .catch((err) => reject(err));
+            }
+          });
+        } else {
+          insertRecord(db, tableName, keys, values, placeholders)
+            .then((insertedRecord) => resolve(insertedRecord))
+            .catch((err) => reject(err));
+        }
+      }
+    );
+  });
+}
+
+function insertRecord(
+  db: sqlite3.Database,
+  tableName: string,
+  keys: string[],
+  values: any[],
+  placeholders: string
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const insertSql = `INSERT INTO ${tableName} (${keys.join(
+      ", "
+    )}) VALUES (${placeholders})`;
+    db.run(insertSql, values, function (err: any) {
+      if (err) {
+        console.log(err);
+        reject({
+          message: "Error al insertar el registro:",
+          err,
+        });
       } else {
-        resolve(
-          JSON.stringify({
-            status: 200,
-            message: "Registro insertado correctamente.",
-          })
+        db.get(
+          `SELECT * FROM ${tableName} WHERE rowid = ?`,
+          [this.lastID],
+          (err: any, row: any) => {
+            if (err) {
+              reject({
+                message: "Error al recuperar el registro insertado:",
+                err,
+              });
+            } else {
+              resolve(row);
+            }
+          }
         );
       }
     });
@@ -140,7 +202,7 @@ export function updateDoc(
   db: sqlite3.Database,
   docRef: any,
   newData: any
-): Promise<void> {
+): Promise<any> {
   return new Promise((resolve, reject) => {
     const tableName = docRef.tableName;
     const idColumn = docRef.idColumn;
@@ -161,7 +223,10 @@ export function updateDoc(
         });
       } else {
         if (this.changes > 0) {
-          resolve();
+          resolve({
+            stauts: 201,
+            message: "Elemento actualizado",
+          });
         } else {
           reject(new Error("No se encontró el documento para actualizar."));
         }

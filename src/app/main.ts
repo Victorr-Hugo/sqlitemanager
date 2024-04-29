@@ -1,21 +1,3 @@
-interface QueryOptions {
-  column: string;
-  operand: string;
-  value: any;
-}
-
-interface Query {
-  collection: Collection;
-  field: string;
-  operator: string;
-  value: any;
-}
-
-interface Collection {
-  db: any;
-  table: string;
-}
-
 interface SecuritySettings {
   authentication: string;
   passwordPolicy: {
@@ -81,4 +63,9 @@ interface AppConfig {
   logging: LoggingSettings;
   notifications: NotificationsSettings;
   analytics: AnalyticsSettings;
+}
+
+export function initializeApp(conf: AppConfig) {
+  //@TODO añadir manejo de configuración de proyecto
+  return conf;
 }
