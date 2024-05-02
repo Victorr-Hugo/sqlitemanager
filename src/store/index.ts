@@ -14,7 +14,6 @@ export interface Collection {
 }
 
 export function getStore(): sqlite3.Database {
-  //@TODO implementar multiples bases de datos con nombres en conf de proj
   const dbFile = "__d.sqlite";
   const dbExists = fs.existsSync(dbFile);
 
@@ -112,7 +111,6 @@ export function getDocs(
     });
   });
 }
-
 export function addDoc(
   db: sqlite3.Database,
   tableName: string,
@@ -125,6 +123,8 @@ export function addDoc(
     const keys = Object.keys(recordWithTimestamp);
     const values = Object.values(recordWithTimestamp);
     const placeholders = Array(keys.length).fill("?").join(",");
+
+    // Check if the table already exists
     db.get(
       `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
       [tableName],
@@ -135,7 +135,8 @@ export function addDoc(
             err,
           });
         } else if (!row) {
-          const createTableSql = `CREATE TABLE ${tableName} (${keys
+          // Table doesn't exist, create it first
+          const createTableSql = `CREATE TABLE ${tableName} (id INTEGER PRIMARY KEY AUTOINCREMENT, ${keys
             .map((key) => `${key} TEXT`)
             .join(", ")})`;
           db.run(createTableSql, (err: any) => {
@@ -145,12 +146,14 @@ export function addDoc(
                 err,
               });
             } else {
+              // Table created successfully, insert the record
               insertRecord(db, tableName, keys, values, placeholders)
                 .then((insertedRecord) => resolve(insertedRecord))
                 .catch((err) => reject(err));
             }
           });
         } else {
+          // Table already exists, insert the record directly
           insertRecord(db, tableName, keys, values, placeholders)
             .then((insertedRecord) => resolve(insertedRecord))
             .catch((err) => reject(err));
@@ -179,9 +182,10 @@ function insertRecord(
           err,
         });
       } else {
+        const insertedId = this.lastID;
         db.get(
           `SELECT * FROM ${tableName} WHERE rowid = ?`,
-          [this.lastID],
+          [insertedId],
           (err: any, row: any) => {
             if (err) {
               reject({
@@ -189,7 +193,8 @@ function insertRecord(
                 err,
               });
             } else {
-              resolve(row);
+              const doc = { ...row, id: insertedId };
+              resolve(doc);
             }
           }
         );
@@ -295,7 +300,6 @@ export function doc(
     });
   });
 }
-
 export function getDoc(
   collection: Collection,
   queryOptions?: QueryOptions
@@ -303,22 +307,75 @@ export function getDoc(
   const { db, table } = collection;
 
   return new Promise((resolve, reject) => {
-    let sql = `SELECT * FROM ${table}`;
-    let params: any[] = [];
+    const tableExistsQuery = `SELECT name FROM sqlite_master WHERE type='table' AND name=?`;
+    const columnExistsQuery = `PRAGMA table_info(${table})`;
 
-    if (queryOptions) {
-      sql += ` WHERE ${queryOptions.column} ${queryOptions.operand} ?`;
-      params.push(queryOptions.value);
-    }
-
-    sql += " LIMIT 1";
-
-    db.get(sql, params, (err: any, row: any) => {
+    db.get(tableExistsQuery, [table], (err: any, row: any) => {
       if (err) {
         reject(err);
-      } else {
-        resolve(row);
+        return;
       }
+      if (!row) {
+        resolve(false);
+        return;
+      }
+      db.all(columnExistsQuery, [], (err: any, rows: any[]) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        const columnExists = rows.some(
+          (row) => row.name === queryOptions?.column
+        );
+        if (!columnExists) {
+          resolve(false);
+          return;
+        }
+
+        executeQuery(db, table, queryOptions, resolve, reject);
+      });
+    });
+  });
+}
+
+function executeQuery(
+  db: any,
+  table: string,
+  queryOptions: QueryOptions | undefined,
+  resolve: any,
+  reject: any
+) {
+  let sql = `SELECT * FROM ${table}`;
+  let params: any[] = [];
+
+  if (queryOptions) {
+    sql += ` WHERE ${queryOptions.column} ${queryOptions.operand} ?`;
+    params.push(queryOptions.value);
+  }
+
+  sql += " LIMIT 1";
+
+  db.get(sql, params, (err: any, row: any) => {
+    if (err) {
+      reject(err);
+    } else {
+      resolve(row);
+    }
+  });
+}
+
+export async function queryDoc(
+  db: sqlite3.Database,
+  query: string,
+  params: any[]
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    db.all(query, params, (err: any, rows: any[]) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve(rows);
     });
   });
 }
