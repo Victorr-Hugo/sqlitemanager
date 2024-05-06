@@ -204,22 +204,22 @@ function insertRecord(
 }
 
 export function updateDoc(
-  db: sqlite3.Database,
-  docRef: any,
-  newData: any
+  collection: Collection,
+  data: any,
+  queryOptions?: QueryOptions
 ): Promise<any> {
   return new Promise((resolve, reject) => {
-    const tableName = docRef.tableName;
-    const idColumn = docRef.idColumn;
-    const idValue = docRef.idValue;
-    const updateData = Object.keys(newData)
+    const tableName = collection.table;
+    const idColumn = queryOptions?.column;
+    const idValue = queryOptions?.value;
+    const updateData = Object.keys(data)
       .map((key) => `${key} = ?`)
       .join(", ");
     const sql = `UPDATE ${tableName} SET ${updateData} WHERE ${idColumn} = ?`;
 
-    const values = [...Object.values(newData), idValue];
+    const values = [...Object.values(data), idValue];
 
-    db.run(sql, values, function (err: any) {
+    collection.db.run(sql, values, (err: any) => {
       if (err) {
         reject({
           status: 500,
@@ -227,9 +227,9 @@ export function updateDoc(
           error: err,
         });
       } else {
-        if (this.changes > 0) {
+        if (collection.db.changes > 0) {
           resolve({
-            stauts: 201,
+            status: 201,
             message: "Elemento actualizado",
           });
         } else {
@@ -241,42 +241,67 @@ export function updateDoc(
 }
 
 export async function deleteDoc(
-  db: sqlite3.Database,
-  tableName: string,
-  queryOptions: QueryOptions
-): Promise<void> {
-  try {
-    const docRef = await doc(db, tableName, queryOptions);
+  collection: Collection,
+  queryOptions?: QueryOptions
+): Promise<boolean> {
+  const { db, table } = collection;
 
-    if (!docRef) {
-      throw new Error("No se encontró el documento para eliminar.");
-    }
+  return new Promise((resolve, reject) => {
+    const tableExistsQuery = `SELECT name FROM sqlite_master WHERE type='table' AND name=?`;
+    const columnExistsQuery = `PRAGMA table_info(${table})`;
 
-    const idColumn = Object.keys(queryOptions)[0];
-    const idValue = Object.values(queryOptions)[0];
-    const sql = `DELETE FROM ${tableName} WHERE ${idColumn} = ?`;
+    db.get(tableExistsQuery, [table], (err: any, row: any) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      if (!row) {
+        resolve(false);
+        return;
+      }
 
-    await new Promise<void>((resolve, reject) => {
-      db.run(sql, [idValue], function (err: any) {
-        if (err) {
-          reject({
-            status: 500,
-            message: "Error al eliminar el documento:",
-            error: err,
-          });
-        } else {
-          if (this.changes > 0) {
-            resolve();
-          } else {
-            reject(new Error("No se encontró el documento para eliminar."));
+      if (queryOptions && queryOptions.column) {
+        db.all(columnExistsQuery, [], (err: any, rows: any[]) => {
+          if (err) {
+            reject(err);
+            return;
           }
-        }
-      });
+          const columnExists = rows.some(
+            (row) => row.name === queryOptions.column
+          );
+          if (!columnExists) {
+            resolve(false);
+            return;
+          }
+
+          let deleteQuery = `DELETE FROM ${table}`;
+
+          if (queryOptions.value) {
+            deleteQuery += ` WHERE ${queryOptions.column} = ?`;
+          }
+
+          db.run(deleteQuery, [queryOptions?.value], (err: any) => {
+            if (err) {
+              reject(err);
+            } else {
+              resolve(true);
+            }
+          });
+        });
+      } else {
+        let deleteQuery = `DELETE FROM ${table}`;
+        db.run(deleteQuery, [], (err: any) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(true);
+          }
+        });
+      }
     });
-  } catch (error) {
-    throw error;
-  }
+  });
 }
+
 export function doc(
   db: sqlite3.Database,
   tableName: string,
